@@ -1,267 +1,144 @@
-import time
-import streamlit as st
+import os
+import tempfile
 
-# ─────────────────────────────
-# CONFIGURACIÓN BÁSICA
-# ─────────────────────────────
-st.set_page_config(
-    page_title="Tulkit Pay - Verificación DNI",
-    page_icon="💳",
-    layout="centered"
+import streamlit as st
+from openai import OpenAI
+from audio_recorder_streamlit import audio_recorder  # pip install audio-recorder-streamlit
+
+
+# ---------------- CONFIG BÁSICA ---------------- #
+
+st.set_page_config(page_title="Chatbot IA con Voz", page_icon="🎙️")
+
+st.title("🎙️ Chatbot de IA con voz + texto")
+st.caption("Habla o escribe, y el bot te responde en el mismo chat (OpenAI + Streamlit).")
+
+# --- API KEY (barra lateral) --- #
+env_key = os.environ.get("OPENAI_API_KEY", "")
+api_key = st.sidebar.text_input(
+    "🔑 OpenAI API key",
+    value=env_key,
+    type="password",
+    help="Crea tu API key en platform.openai.com y ponla aquí.",
 )
 
-# Video tutorial (puedes cambiar la URL por tu propio video)
-TULKIT_TUTORIAL_URL = "https://www.youtube.com/watch?v=ysz5NMXJiyU"
+if not api_key:
+    st.sidebar.warning("Pon tu API key para empezar.")
+    st.stop()
 
-# ─────────────────────────────
-# ESTILOS (modo oscuro elegante)
-# ─────────────────────────────
-def inject_css():
-    st.markdown(
-        """
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap');
+client = OpenAI(api_key=api_key)
 
-        html, body, [class*="css"] {
-            font-family: 'Poppins', sans-serif;
+
+# ---------------- ESTADO DE LA CONVERSACIÓN ---------------- #
+
+if "messages" not in st.session_state:
+    # Incluimos el mensaje de sistema solo una vez
+    st.session_state.messages = [
+        {
+            "role": "system",
+            "content": (
+                "Eres un asistente útil que responde SIEMPRE en español, "
+                "de forma clara y relativamente breve."
+            ),
         }
-
-        .stApp {
-            background: radial-gradient(circle at top, #111827 0, #020617 55%);
-        }
-
-        .block-container {
-            padding-top: 1.5rem;
-            padding-bottom: 2rem;
-            max-width: 420px;
-        }
-
-        .brand {
-            text-align: center;
-            margin-bottom: 1.4rem;
-        }
-
-        .brand-logo {
-            font-size: 2.1rem;
-            font-weight: 700;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-            background: linear-gradient(90deg, #38bdf8, #4f46e5);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        .brand-sub {
-            font-size: 0.9rem;
-            color: #9ca3af;
-        }
-
-        .t-card {
-            background: rgba(15, 23, 42, 0.95);
-            border-radius: 18px;
-            padding: 1.6rem 1.4rem;
-            border: 1px solid rgba(148, 163, 184, 0.6);
-            box-shadow: 0 22px 50px rgba(15, 23, 42, 0.8);
-            color: #e5e7eb;
-        }
-
-        .t-title {
-            font-size: 1.25rem;
-            font-weight: 600;
-            margin-bottom: 0.4rem;
-        }
-
-        .t-text {
-            font-size: 0.9rem;
-            color: #9ca3af;
-            margin-bottom: 1rem;
-        }
-
-        .t-label {
-            font-size: 0.85rem;
-            color: #9ca3af;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    ]
 
 
-def brand_header():
-    st.markdown(
-        """
-        <div class="brand">
-          <div class="brand-logo">Tulkit Pay</div>
-          <div class="brand-sub">Verificación de identidad</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+# Mostrar historial (sin el mensaje de sistema)
+for msg in st.session_state.messages:
+    if msg["role"] == "system":
+        continue
+
+    with st.chat_message("user" if msg["role"] == "user" else "assistant"):
+        st.markdown(msg["content"])
 
 
-inject_css()
+# ---------------- FUNCIONES AUXILIARES ---------------- #
 
-# ─────────────────────────────
-# ESTADO GLOBAL
-# ─────────────────────────────
-if "step" not in st.session_state:
-    st.session_state.step = "dni"
+def transcribir_audio(audio_bytes: bytes) -> str:
+    """
+    Envía audio a OpenAI para convertir voz -> texto.
+    Usa el endpoint de transcripción de audio. :contentReference[oaicite:2]{index=2}
+    """
+    # Guardamos los bytes en un archivo temporal .wav
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(audio_bytes)
+        tmp.flush()
+        tmp_path = tmp.name
 
-if "dni_image" not in st.session_state:
-    st.session_state.dni_image = None
-
-if "verification_started" not in st.session_state:
-    st.session_state.verification_started = False
-
-if "verification_done" not in st.session_state:
-    st.session_state.verification_done = False
-
-
-def go_to(step_name: str):
-    st.session_state.step = step_name
-
-
-# ─────────────────────────────
-# PANTALLA 1: SUBIR DNI
-# ─────────────────────────────
-def screen_dni():
-    brand_header()
-
-    st.markdown('<div class="t-card">', unsafe_allow_html=True)
-
-    st.markdown('<div class="t-title">Documento de identidad</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="t-text">Sube una foto nítida del frente de tu DNI para comenzar la verificación.</div>',
-        unsafe_allow_html=True,
-    )
-
-    tab_cam, tab_upload = st.tabs(["📷 Usar cámara", "📁 Subir imagen"])
-
-    with tab_cam:
-        dni_cam = st.camera_input("Toma una foto de tu DNI")
-        if dni_cam is not None:
-            st.session_state.dni_image = dni_cam
-            st.success("DNI capturado desde la cámara.")
-
-    with tab_upload:
-        dni_file = st.file_uploader(
-            "O selecciona una foto de tu DNI",
-            type=["png", "jpg", "jpeg"],
-            key="dni_file",
-        )
-        if dni_file is not None:
-            st.session_state.dni_image = dni_file
-            st.success("DNI subido desde archivo.")
-
-    if st.session_state.dni_image is not None:
-        st.image(
-            st.session_state.dni_image,
-            caption="Vista previa del DNI (prototipo)",
-            use_column_width=True,
+    with open(tmp_path, "rb") as f:
+        transcript = client.audio.transcriptions.create(
+            model="gpt-4o-mini-transcribe",  # también puedes usar "whisper-1"
+            file=f,
         )
 
-    st.write("")
-    if st.button("Continuar con la verificación"):
-        if st.session_state.dni_image is None:
-            st.warning("Por favor sube o captura primero la imagen de tu DNI.")
-        else:
-            st.session_state.verification_started = False
-            st.session_state.verification_done = False
-            go_to("verificando")
-
-    st.markdown("</div>", unsafe_allow_html=True)
+    # Normalmente la respuesta tiene el campo .text
+    text = getattr(transcript, "text", None)
+    return text or str(transcript)
 
 
-# ─────────────────────────────
-# PANTALLA 2: VERIFICANDO (VIDEO)
-# ─────────────────────────────
-def screen_verificando():
-    brand_header()
+def preguntar_al_modelo(user_text: str) -> str:
+    """
+    Llama al modelo de chat de OpenAI (Responses API) con todo el historial. :contentReference[oaicite:3]{index=3}
+    """
+    # Añadimos el mensaje del usuario al historial
+    st.session_state.messages.append({"role": "user", "content": user_text})
 
-    st.markdown('<div class="t-card">', unsafe_allow_html=True)
-
-    st.markdown('<div class="t-title">Verificando tu identidad…</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="t-text">Este proceso puede tardar hasta 2 minutos. No cierres esta ventana.</div>',
-        unsafe_allow_html=True,
+    # Creamos la respuesta
+    response = client.responses.create(
+        model="gpt-4.1-mini",  # puedes cambiar a otro modelo compatible
+        input=st.session_state.messages,
     )
 
-    VERIFICATION_SECONDS = 20  # cambia a 120 para 2 minutos reales
+    # Atajo para extraer el texto generado
+    assistant_text = response.output_text
 
-    progress_bar = st.progress(0)
-    tiempo_placeholder = st.empty()
-
-    # Ejecutamos la simulación solo la primera vez
-    if not st.session_state.verification_started:
-        st.session_state.verification_started = True
-        for i in range(VERIFICATION_SECONDS):
-            time.sleep(1)
-            pct = int((i + 1) / VERIFICATION_SECONDS * 100)
-            progress_bar.progress(pct)
-            restantes = VERIFICATION_SECONDS - i - 1
-            tiempo_placeholder.markdown(
-                f"<span class='t-label'>Tiempo estimado restante: <b>{restantes} s</b></span>",
-                unsafe_allow_html=True,
-            )
-        st.session_state.verification_done = True
-
-    if st.session_state.verification_done:
-        progress_bar.progress(100)
-        tiempo_placeholder.markdown(
-            "<span class='t-label'>Tiempo estimado restante: <b>0 s</b></span>",
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("---")
-
-    # Aquí solo mostramos el video, como pediste
-    st.video(TULKIT_TUTORIAL_URL)
-
-    st.markdown("---")
-    if st.session_state.verification_done and st.button("Finalizar verificación"):
-        go_to("done")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-# ─────────────────────────────
-# PANTALLA 3: TERMINADO
-# ─────────────────────────────
-def screen_done():
-    brand_header()
-
-    st.markdown('<div class="t-card">', unsafe_allow_html=True)
-    st.markdown('<div class="t-title">Identidad verificada (demo)</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="t-text">Tu documento ha sido verificado correctamente en este prototipo de Tulkit Pay.</div>',
-        unsafe_allow_html=True,
+    # Guardamos respuesta en el historial
+    st.session_state.messages.append(
+        {"role": "assistant", "content": assistant_text}
     )
 
-    if st.button("Volver a empezar"):
-        st.session_state.step = "dni"
-        st.session_state.dni_image = None
-        st.session_state.verification_started = False
-        st.session_state.verification_done = False
-
-    st.markdown("</div>", unsafe_allow_html=True)
+    return assistant_text
 
 
-# ─────────────────────────────
-# ROUTER PRINCIPAL
-# ─────────────────────────────
-def main():
-    step = st.session_state.step
+# ---------------- ENTRADA POR VOZ ---------------- #
 
-    if step == "dni":
-        screen_dni()
-    elif step == "verificando":
-        screen_verificando()
-    elif step == "done":
-        screen_done()
-    else:
-        st.session_state.step = "dni"
-        screen_dni()
+st.subheader("🎙️ Hablar con el bot")
+
+st.write("Pulsa el botón, habla, y cuando termines volverá a ejecutarse la app.")
+
+audio_bytes = audio_recorder(
+    text="Hacer clic para grabar / parar",
+    pause_threshold=2.0,  # se para solo si detecta silencio
+)
+
+voz_a_texto = None
+if audio_bytes:
+    st.audio(audio_bytes, format="audio/wav")
+    with st.spinner("Transcribiendo tu voz..."):
+        voz_a_texto = transcribir_audio(audio_bytes)
+        st.write(f"**Lo que entendí:** {voz_a_texto}")
 
 
-if __name__ == "__main__":
-    main()
+# ---------------- ENTRADA POR TEXTO ---------------- #
+
+st.subheader("⌨️ O escribir al bot")
+texto_usuario = st.chat_input("Escribe tu mensaje aquí...")
+
+# Si hay texto proveniente de la voz y el usuario no escribió nada,
+# usamos la transcripción como mensaje.
+if voz_a_texto and not texto_usuario:
+    texto_usuario = voz_a_texto
+
+# Cuando haya algún mensaje de usuario (voz o texto),
+# llamamos al modelo y mostramos la respuesta.
+if texto_usuario:
+    # Mostrar mensaje del usuario inmediatamente
+    with st.chat_message("user"):
+        st.markdown(texto_usuario)
+
+    # Obtener respuesta del modelo
+    with st.chat_message("assistant"):
+        with st.spinner("Pensando..."):
+            respuesta = preguntar_al_modelo(texto_usuario)
+            st.markdown(respuesta)
