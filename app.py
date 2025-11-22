@@ -14,10 +14,17 @@ st.title("🎙️ Chatbot de IA con voz + texto")
 st.caption("Habla o escribe, y el bot te responde en el mismo chat (OpenAI + Streamlit).")
 
 # --- API KEY (barra lateral) --- #
-env_key = os.environ.get("OPENAI_API_KEY", "")
+default_key = ""
+try:
+    # Si estás en Streamlit Cloud y usas secrets.toml
+    default_key = st.secrets["OPENAI_API_KEY"]
+except Exception:
+    # Si no hay secrets, intentamos con variable de entorno
+    default_key = os.environ.get("OPENAI_API_KEY", "")
+
 api_key = st.sidebar.text_input(
     "🔑 OpenAI API key",
-    value=env_key,
+    value=default_key,
     type="password",
     help="Crea tu API key en platform.openai.com y ponla aquí.",
 )
@@ -43,7 +50,6 @@ if "messages" not in st.session_state:
         }
     ]
 
-
 # Mostrar historial (sin el mensaje de sistema)
 for msg in st.session_state.messages:
     if msg["role"] == "system":
@@ -56,10 +62,7 @@ for msg in st.session_state.messages:
 # ---------------- FUNCIONES AUXILIARES ---------------- #
 
 def transcribir_audio(audio_bytes: bytes) -> str:
-    """
-    Envía audio a OpenAI para convertir voz -> texto.
-    Usa el endpoint de transcripción de audio. :contentReference[oaicite:2]{index=2}
-    """
+    # Voz -> texto usando el Audio API de OpenAI (transcripción).
     # Guardamos los bytes en un archivo temporal .wav
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         tmp.write(audio_bytes)
@@ -68,19 +71,28 @@ def transcribir_audio(audio_bytes: bytes) -> str:
 
     with open(tmp_path, "rb") as f:
         transcript = client.audio.transcriptions.create(
-            model="gpt-4o-mini-transcribe",  # también puedes usar "whisper-1"
+            model="gpt-4o-transcribe",  # también puedes usar "whisper-1"
             file=f,
         )
 
-    # Normalmente la respuesta tiene el campo .text
     text = getattr(transcript, "text", None)
     return text or str(transcript)
 
 
+def sintetizar_voz(texto: str) -> bytes:
+    # Texto -> voz usando el Audio API de OpenAI (text-to-speech).
+    response = client.audio.speech.create(
+        model="gpt-4o-mini-tts",
+        voice="alloy",
+        input=texto,
+        format="mp3",
+    )
+    audio_bytes = response.read()
+    return audio_bytes
+
+
 def preguntar_al_modelo(user_text: str) -> str:
-    """
-    Llama al modelo de chat de OpenAI (Responses API) con todo el historial. :contentReference[oaicite:3]{index=3}
-    """
+    # Llama al modelo de chat de OpenAI (Responses API) con el historial completo.
     # Añadimos el mensaje del usuario al historial
     st.session_state.messages.append({"role": "user", "content": user_text})
 
@@ -142,3 +154,10 @@ if texto_usuario:
         with st.spinner("Pensando..."):
             respuesta = preguntar_al_modelo(texto_usuario)
             st.markdown(respuesta)
+
+            # Generar audio de la respuesta
+            try:
+                audio_respuesta = sintetizar_voz(respuesta)
+                st.audio(audio_respuesta, format="audio/mp3")
+            except Exception as e:
+                st.warning(f"No pude generar audio de la respuesta: {e}")
